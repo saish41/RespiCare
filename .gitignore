@@ -1,0 +1,49 @@
+# ==============================
+# Python
+# ==============================
+backend/venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ==============================
+# Node / React
+# ==============================
+frontend/node_modules/
+node_modules/
+frontend/dist/
+dist/
+
+# ==============================
+# Environment secrets
+# ==============================
+.env
+backend/.env
+frontend/.env
+
+# Keep examples
+!.env.example
+!backend/.env.example
+!frontend/.env.example
+
+# ==============================
+# Database
+# ==============================
+*.db
+*.sqlite
+*.sqlite3
+
+# ==============================
+# IDE / OS
+# ==============================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ==============================
+# Logs
+# ==============================
+*.log
+npm-debug.log*
