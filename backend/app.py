@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -39,13 +41,19 @@ app = FastAPI(
 # CORS
 # =========================================================
 
-
+frontend_url = os.getenv(
+    "FRONTEND_URL",
+    "http://localhost:5173",
+)
 
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "https://gleeful-tartufo-d890d1.netlify.app",
 ]
+
+if frontend_url and frontend_url not in origins:
+    origins.append(frontend_url)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -55,33 +63,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # =========================================================
 # ROUTERS
 # =========================================================
 
-app.include_router(
-    auth.router
-)
-
-app.include_router(
-    connections.router
-)
-
-app.include_router(
-    monitoring.router
-)
-
-app.include_router(
-    alerts.router
-)
-
-app.include_router(
-    medications.router
-)
-
-app.include_router(
-    respiratory_events.router
-)
+app.include_router(auth.router)
+app.include_router(connections.router)
+app.include_router(monitoring.router)
+app.include_router(alerts.router)
+app.include_router(medications.router)
+app.include_router(respiratory_events.router)
 
 
 # =========================================================
