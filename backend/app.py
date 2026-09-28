@@ -43,14 +43,21 @@ app = FastAPI(
 
 frontend_url = os.getenv(
     "FRONTEND_URL",
-    "http://localhost:5173",
+    "https://respicare-web.onrender.com",
 )
 
+
 origins = [
+    # Local development
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+
+    # Production frontend
+    "https://respicare-web.onrender.com",
 ]
 
+
+# Also allow the frontend URL configured in Render
 if frontend_url and frontend_url not in origins:
     origins.append(frontend_url)
 
