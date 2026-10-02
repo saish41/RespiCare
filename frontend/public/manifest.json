@@ -1,0 +1,43 @@
+{
+  "id": "https://respicare-web.onrender.com/",
+  "name": "RespiCare",
+  "short_name": "RespiCare",
+  "description": "Respiratory monitoring and caregiver support platform.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "orientation": "portrait",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": [
+    "health",
+    "medical",
+    "utilities"
+  ],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png?v=2",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png?v=2",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png?v=2",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "display_override": [
+    "standalone",
+    "window-controls-overlay"
+  ]
+}
