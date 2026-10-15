@@ -11,7 +11,6 @@ from fastapi import (
 )
 
 from pydantic import BaseModel
-
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -70,37 +69,26 @@ class SimulationStartRequest(BaseModel):
 
 class LiveReadingRequest(BaseModel):
     respiratory_rate: float | None = None
-
     signal_quality: str = "GOOD"
-
     pattern: str = "UNKNOWN"
-
     confidence: float | None = None
-
     amplitude: float | None = None
 
 
 # =========================================================
 # SIMULATION PROCESSING CACHE
-#
-# Important:
-# Multiple dashboards may request /current.
-#
-# We only process one simulation measurement per patient
-# per measurement interval.
-#
-# Everyone else receives the same processed result.
 # =========================================================
 
 SIMULATION_TICK_SECONDS = 0.50
 
+# If no fresh live reading arrives within 10 seconds,
+# the ESP32/device agent is considered offline.
+LIVE_READING_TIMEOUT_SECONDS = 10
+
 
 _simulation_cache = {}
-
 _simulation_last_processed = {}
-
 _simulation_locks = {}
-
 _simulation_global_lock = threading.Lock()
 
 
@@ -112,6 +100,43 @@ def utc_now_iso():
     return datetime.now(
         timezone.utc
     ).isoformat()
+
+
+def normalize_utc_datetime(value):
+    if value is None:
+        return None
+
+    # SQLite may return naive timestamps.
+    if value.tzinfo is None:
+        return value.replace(
+            tzinfo=timezone.utc
+        )
+
+    return value.astimezone(
+        timezone.utc
+    )
+
+
+def is_live_reading_fresh(timestamp):
+    timestamp = normalize_utc_datetime(
+        timestamp
+    )
+
+    if timestamp is None:
+        return False
+
+    age_seconds = (
+        datetime.now(timezone.utc)
+        - timestamp
+    ).total_seconds()
+
+    if age_seconds < 0:
+        return False
+
+    return (
+        age_seconds
+        <= LIVE_READING_TIMEOUT_SECONDS
+    )
 
 
 # =========================================================
@@ -368,11 +393,6 @@ def get_scenarios(
 
 # =========================================================
 # START SIMULATION
-#
-# PATIENT ONLY.
-#
-# Family and Doctor cannot control simulation even if
-# they manually call this endpoint.
 # =========================================================
 
 @router.post(
@@ -385,10 +405,6 @@ def start_patient_simulation(
         require_role("PATIENT")
     ),
 ):
-    # =====================================================
-    # PATIENT-ONLY SIMULATION CONTROL
-    # =====================================================
-
     if current_user.id != patient_id:
         raise HTTPException(
             status_code=403,
@@ -398,19 +414,11 @@ def start_patient_simulation(
             ),
         )
 
-    # =====================================================
-    # NORMALIZE SCENARIO
-    # =====================================================
-
     scenario = (
         payload.scenario
         .strip()
         .upper()
     )
-
-    # =====================================================
-    # COMPATIBILITY ALIASES
-    # =====================================================
 
     scenario_aliases = {
         "FAST_BREATHING":
@@ -434,10 +442,6 @@ def start_patient_simulation(
         scenario,
     )
 
-    # =====================================================
-    # ALLOWED SCENARIOS
-    # =====================================================
-
     allowed = {
         "NORMAL",
         "FAST",
@@ -458,17 +462,9 @@ def start_patient_simulation(
             ),
         )
 
-    # =====================================================
-    # CLEAR OLD SIMULATION CACHE
-    # =====================================================
-
     clear_simulation_cache(
         patient_id
     )
-
-    # =====================================================
-    # START SIMULATION
-    # =====================================================
 
     try:
         state = start_simulation(
@@ -499,8 +495,6 @@ def start_patient_simulation(
 
 # =========================================================
 # STOP SIMULATION
-#
-# PATIENT ONLY.
 # =========================================================
 
 @router.post(
@@ -569,11 +563,6 @@ def process_simulation_tick(
             )
         )
 
-        # -------------------------------------------------
-        # Another dashboard has already processed this tick.
-        # Return exactly the same result.
-        # -------------------------------------------------
-
         if (
             cached is not None
             and last_processed is not None
@@ -584,10 +573,6 @@ def process_simulation_tick(
             < SIMULATION_TICK_SECONDS
         ):
             return cached
-
-        # -------------------------------------------------
-        # Generate measurement
-        # -------------------------------------------------
 
         reading = generate_reading(
             patient_id
@@ -615,13 +600,6 @@ def process_simulation_tick(
             )
         )
 
-        # -------------------------------------------------
-        # Detector
-        #
-        # Simulator provides measurements.
-        # It does NOT decide WARNING/DISTRESS.
-        # -------------------------------------------------
-
         detector_result = (
             process_measurement(
                 patient_id=patient_id,
@@ -641,10 +619,6 @@ def process_simulation_tick(
             detector_result
         )
 
-        # -------------------------------------------------
-        # Alert
-        # -------------------------------------------------
-
         create_detector_alert(
             db=db,
 
@@ -653,10 +627,6 @@ def process_simulation_tick(
             detector_result=
                 detector_result,
         )
-
-        # -------------------------------------------------
-        # Persistent respiratory event history
-        # -------------------------------------------------
 
         update_respiratory_event(
             db=db,
@@ -677,10 +647,6 @@ def process_simulation_tick(
             signal_quality=
                 signal_quality,
         )
-
-        # -------------------------------------------------
-        # Build monitoring result
-        # -------------------------------------------------
 
         result = {
             "patient_id":
@@ -703,10 +669,6 @@ def process_simulation_tick(
             "respiratory_rate":
                 respiratory_rate,
 
-            # IMPORTANT:
-            # This is simulated amplitude/volume.
-            # CSI does not directly provide calibrated
-            # tidal volume in mL.
             "simulated_volume":
                 simulated_volume,
 
@@ -742,10 +704,6 @@ def process_simulation_tick(
                 utc_now_iso(),
         }
 
-        # -------------------------------------------------
-        # Cache AFTER successful processing
-        # -------------------------------------------------
-
         _simulation_cache[
             patient_id
         ] = result
@@ -759,9 +717,6 @@ def process_simulation_tick(
 
 # =========================================================
 # CURRENT MONITORING STATE
-#
-# Patient / linked Family / linked Doctor
-# can all read this endpoint.
 # =========================================================
 
 @router.get(
@@ -803,11 +758,6 @@ def get_current_monitoring(
 
     # -----------------------------------------------------
     # LIVE MODE
-    #
-    # Detector was already processed when the measurement
-    # was POSTed to /reading.
-    #
-    # GET does NOT process the detector.
     # -----------------------------------------------------
 
     latest = (
@@ -834,56 +784,91 @@ def get_current_monitoring(
         detector_result
     )
 
-    if latest:
-        quality = str(
-            latest.signal_quality
-            or "UNKNOWN"
-        ).upper()
+    # -----------------------------------------------------
+    # NO READING HAS EVER BEEN RECEIVED
+    # -----------------------------------------------------
 
-        unreliable = quality in {
-            "UNKNOWN",
-            "UNRELIABLE",
-            "SIGNAL_LOSS",
-            "LOST",
-            "POOR",
-            "MOTION_ARTIFACT",
+    if latest is None:
+        return {
+            "patient_id": patient_id,
+
+            "mode": "LIVE",
+
+            "source": "LIVE",
+
+            "status": "WAITING_FOR_DEVICE",
+
+            "device_connected": False,
+
+            "scenario": None,
+
+            "respiratory_rate": None,
+
+            "simulated_volume": None,
+
+            "signal_quality": "NO_SIGNAL",
+
+            "pattern": "NO_DATA",
+
+            "confidence": None,
+
+            "waveform": [],
+
+            "progress": None,
+
+            "last_seen": None,
+
+            **detector,
+
+            "timestamp": utc_now_iso(),
         }
 
-        return {
-            "patient_id":
-                patient_id,
+    # -----------------------------------------------------
+    # IMPORTANT FIX:
+    # CHECK WHETHER LATEST LIVE DATA IS STILL FRESH
+    # -----------------------------------------------------
 
-            "mode":
-                "LIVE",
+    latest_timestamp = (
+        normalize_utc_datetime(
+            latest.timestamp
+        )
+    )
+
+    if not is_live_reading_fresh(
+        latest.timestamp
+    ):
+        return {
+            "patient_id": patient_id,
+
+            "mode": "LIVE",
 
             "source":
                 latest.source
                 or "LIVE",
 
             "status":
-                (
-                    "SIGNAL_UNRELIABLE"
-                    if unreliable
-                    else "MONITORING"
-                ),
+                "DEVICE_OFFLINE",
+
+            "device_connected":
+                False,
 
             "scenario":
                 None,
 
             "respiratory_rate":
-                latest.respiratory_rate,
+                None,
 
             "simulated_volume":
                 None,
 
             "signal_quality":
-                latest.signal_quality,
+                "SIGNAL_LOSS",
 
             "pattern":
-                latest.pattern,
+                "NO_SIGNAL",
 
             "confidence":
-                latest.confidence,
+                None,
 
             "waveform":
                 [],
@@ -891,22 +876,36 @@ def get_current_monitoring(
             "progress":
                 None,
 
+            "last_seen":
+                (
+                    latest_timestamp.isoformat()
+                    if latest_timestamp
+                    else None
+                ),
+
             **detector,
 
             "timestamp":
-                (
-                    latest.timestamp.isoformat()
-                    if latest.timestamp
-                    else utc_now_iso()
-                ),
+                utc_now_iso(),
         }
 
     # -----------------------------------------------------
-    # NO LIVE DATA
-    #
-    # Do not invent 15 BPM.
-    # Do not animate fake respiration.
+    # FRESH LIVE READING
     # -----------------------------------------------------
+
+    quality = str(
+        latest.signal_quality
+        or "UNKNOWN"
+    ).upper()
+
+    unreliable = quality in {
+        "UNKNOWN",
+        "UNRELIABLE",
+        "SIGNAL_LOSS",
+        "LOST",
+        "POOR",
+        "MOTION_ARTIFACT",
+    }
 
     return {
         "patient_id":
@@ -916,28 +915,36 @@ def get_current_monitoring(
             "LIVE",
 
         "source":
-            "LIVE",
+            latest.source
+            or "LIVE",
 
         "status":
-            "WAITING_FOR_DEVICE",
+            (
+                "SIGNAL_UNRELIABLE"
+                if unreliable
+                else "MONITORING"
+            ),
+
+        "device_connected":
+            True,
 
         "scenario":
             None,
 
         "respiratory_rate":
-            None,
+            latest.respiratory_rate,
 
         "simulated_volume":
             None,
 
         "signal_quality":
-            "UNKNOWN",
+            latest.signal_quality,
 
         "pattern":
-            "NO_DATA",
+            latest.pattern,
 
         "confidence":
-            None,
+            latest.confidence,
 
         "waveform":
             [],
@@ -945,21 +952,26 @@ def get_current_monitoring(
         "progress":
             None,
 
+        "last_seen":
+            (
+                latest_timestamp.isoformat()
+                if latest_timestamp
+                else None
+            ),
+
         **detector,
 
         "timestamp":
-            utc_now_iso(),
+            (
+                latest_timestamp.isoformat()
+                if latest_timestamp
+                else utc_now_iso()
+            ),
     }
 
 
 # =========================================================
 # LIVE RESPIRATORY READING
-#
-# MVP:
-# Patient's own authenticated session can submit.
-#
-# Later the ESP32/device ingestion endpoint should use
-# device authentication instead of user JWT.
 # =========================================================
 
 @router.post(
@@ -982,11 +994,6 @@ def submit_live_reading(
             ),
         )
 
-    # -----------------------------------------------------
-    # If real data arrives, LIVE wins.
-    # Stop demo simulation so the two sources do not mix.
-    # -----------------------------------------------------
-
     if get_simulation_state(
         patient_id
     ):
@@ -1003,10 +1010,6 @@ def submit_live_reading(
         .strip()
         .upper()
     )
-
-    # -----------------------------------------------------
-    # Save raw/processed respiratory reading
-    # -----------------------------------------------------
 
     reading = RespiratoryReading(
         patient_id=
@@ -1032,10 +1035,6 @@ def submit_live_reading(
     db.commit()
     db.refresh(reading)
 
-    # -----------------------------------------------------
-    # Detector processes this measurement exactly once.
-    # -----------------------------------------------------
-
     detector_result = (
         process_measurement(
             patient_id=patient_id,
@@ -1055,10 +1054,6 @@ def submit_live_reading(
         detector_result
     )
 
-    # -----------------------------------------------------
-    # Alert
-    # -----------------------------------------------------
-
     create_detector_alert(
         db=db,
 
@@ -1067,10 +1062,6 @@ def submit_live_reading(
         detector_result=
             detector_result,
     )
-
-    # -----------------------------------------------------
-    # Persistent respiratory event
-    # -----------------------------------------------------
 
     update_respiratory_event(
         db=db,
@@ -1133,12 +1124,6 @@ def submit_live_reading(
 
 # =========================================================
 # RAW MONITORING HISTORY
-#
-# This remains useful for technical inspection.
-#
-# Respiratory irregularity history is provided separately by:
-#
-# GET /respiratory-events/patient/{patient_id}
 # =========================================================
 
 @router.get(
@@ -1252,11 +1237,6 @@ def get_patient_detector(
 
 # =========================================================
 # RESET DETECTOR
-#
-# Patient only.
-#
-# Useful when beginning a clean demo/calibration session.
-# Family/Doctor cannot reset the patient's detector.
 # =========================================================
 
 @router.post(
